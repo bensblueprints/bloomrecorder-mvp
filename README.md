@@ -28,8 +28,8 @@
 ## 🚀 Quick start
 
 ```bash
-git clone https://github.com/bensblueprints/screen-recorder-desktop
-cd screen-recorder-desktop
+git clone https://github.com/bensblueprints/bloomrecorder
+cd bloomrecorder
 npm i && npm start
 ```
 

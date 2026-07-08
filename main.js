@@ -333,14 +333,22 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // Screenshot mode: render the window, capture it to docs/screenshot.png, exit.
+  // Screenshot mode: render the window, optionally switch mode, capture to docs/, exit.
   if (process.env.SHOT) {
     createMainWindow();
     mainWindow.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
         try {
+          const view = process.env.SHOT_VIEW;
+          if (view) {
+            await mainWindow.webContents.executeJavaScript(
+              `(function(){var b=document.querySelector('[data-mode="'+${JSON.stringify(view)}+'"]');if(b)b.click();})();`
+            );
+            await new Promise((r) => setTimeout(r, 1600));
+          }
           const img = await mainWindow.webContents.capturePage();
-          const out = path.join(__dirname, 'docs', 'screenshot.png');
+          const name = view ? 'screenshot-' + view + '.png' : 'screenshot.png';
+          const out = path.join(__dirname, 'docs', name);
           fs.mkdirSync(path.dirname(out), { recursive: true });
           fs.writeFileSync(out, img.toPNG());
           console.log('[shot] wrote ' + out);
