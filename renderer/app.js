@@ -1057,13 +1057,20 @@ $('#modal-title-input').addEventListener('keydown', (e) => {
 
 $('#delete-file').addEventListener('click', async () => {
   if (!currentItem) return;
+  const target = currentItem;
+  // Release the player's hold on the file before asking the OS to delete it —
+  // otherwise an actively-open <video> can transiently lock it on Windows.
+  const player = $('#player');
+  player.pause();
+  player.removeAttribute('src');
+  player.load();
   try {
-    await window.api.deleteRecording(currentItem.path);
-    toast('Deleted ' + currentItem.name);
+    await window.api.deleteRecording(target.path);
+    toast('Deleted ' + target.name);
     closeModal();
     renderLibrary();
   } catch (err) {
-    toast('Delete failed: ' + err.message, true);
+    toast('Delete failed: ' + err.message, true, 6000);
   }
 });
 
@@ -1177,7 +1184,9 @@ $('#add-captions').addEventListener('click', async () => {
   try {
     const res = await window.api.burnCaptions({
       input: currentItem.path,
-      replace: $('#captions-replace').checked
+      replace: $('#captions-replace').checked,
+      style: $('#captions-style').value,
+      mode: $('#captions-mode').value
     });
     fill.style.width = '100%';
     label.textContent = 'Done → ' + res.output.split(/[\\/]/).pop() + ' (' + fmtSize(res.size) + ')';

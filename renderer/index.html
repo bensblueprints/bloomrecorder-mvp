@@ -296,6 +296,22 @@
       </div>
 
       <div id="captions-block" class="short-block">
+        <div class="device-row">
+          <label class="device-label">Style</label>
+          <select id="captions-style" class="device-select">
+            <option value="classic" selected>Classic (white, black outline)</option>
+            <option value="bold-yellow">Bold Yellow (MrBeast-style)</option>
+            <option value="black-box">Black Box (yellow text)</option>
+            <option value="yellow-outline">Yellow Outline</option>
+          </select>
+        </div>
+        <div class="device-row">
+          <label class="device-label">Captions</label>
+          <select id="captions-mode" class="device-select">
+            <option value="line" selected>Line by line</option>
+            <option value="word">Word by word</option>
+          </select>
+        </div>
         <label class="mic-toggle" for="captions-replace">
           <input type="checkbox" id="captions-replace" />
           <span class="switch"></span>

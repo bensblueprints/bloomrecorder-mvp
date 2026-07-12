@@ -48,6 +48,28 @@ function metaDir() {
   return dir;
 }
 
+// Scratch dir for intermediate ffmpeg outputs, kept inside the library dir
+// so the final move is always a same-volume rename (avoids EXDEV — the
+// library dir can be junctioned to a different physical drive than the OS
+// temp dir on this machine, which made os-temp rename targets fail).
+function tmpWorkDir() {
+  const dir = path.join(libraryDir(), '.tmp');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// Falls back to copy+delete if src/dest ever do end up on different volumes
+// (e.g. output dir gets changed to another drive later).
+function moveFile(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    fs.copyFileSync(src, dest);
+    fs.rmSync(src, { force: true });
+  }
+}
+
 function baseName(videoPath) {
   return path.basename(videoPath).replace(/\.[^.]+$/, '');
 }
@@ -208,8 +230,13 @@ async function transcribeVideo(videoPath, onProgress) {
   return transcript;
 }
 
-// Groups word-level timestamps into short caption cues (~4 words / ~2.2s max).
-function transcriptToCues(transcript) {
+// Groups word-level timestamps into caption cues. 'word' = one word on
+// screen at a time (TikTok/Reels style); 'line' (default) = short phrases,
+// ~4-6 words / ~2.2s max.
+function transcriptToCues(transcript, mode) {
+  if (mode === 'word') {
+    return transcript.words.map((w) => ({ start: w.start, end: Math.max(w.end, w.start + 0.25), text: w.text }));
+  }
   const cues = [];
   let cur = [];
   const flush = () => {
@@ -225,6 +252,16 @@ function transcriptToCues(transcript) {
   flush();
   return cues;
 }
+
+// Caption style templates — libass force_style strings for ffmpeg's
+// subtitles filter. Colours are &HAABBGGRR (alpha, blue, green, red).
+const CAPTION_STYLES = {
+  classic: 'FontName=Arial,FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Bold=1,Alignment=2,MarginV=60',
+  'bold-yellow': 'FontName=Arial Black,FontSize=28,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=0,Bold=1,Alignment=2,MarginV=60',
+  'black-box': 'FontName=Arial,FontSize=24,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=6,Shadow=0,Bold=1,Alignment=2,MarginV=60',
+  'yellow-outline': 'FontName=Arial Black,FontSize=28,PrimaryColour=&H00FFFFFF,OutlineColour=&H0000FFFF,BorderStyle=1,Outline=4,Shadow=0,Bold=1,Alignment=2,MarginV=60'
+};
+const DEFAULT_CAPTION_STYLE = 'classic';
 
 function srtTimestamp(t) {
   const ms = Math.max(0, Math.round(t * 1000));
@@ -468,27 +505,50 @@ ipcMain.handle('library:list', async () => {
       return { path: full, name: f, size: st.size, mtime: st.mtimeMs, ext: path.extname(f).slice(1).toLowerCase() };
     })
     .sort((a, b) => b.mtime - a.mtime);
-  for (const item of files) {
-    if (item.ext !== 'gif') {
-      const t = await ensureThumbnail(item.path);
-      item.thumbnail = t ? 'file:///' + t.replace(/\\/g, '/') : null;
-    } else {
-      item.thumbnail = 'file:///' + item.path.replace(/\\/g, '/');
+  // Thumbnail generation spawns an ffmpeg process per missing thumb — with a
+  // big batch of new files (e.g. a Make Reels run) doing this one-at-a-time
+  // made the whole library view feel frozen. Run with bounded concurrency.
+  const CONCURRENCY = 4;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < files.length) {
+      const item = files[cursor++];
+      if (item.ext !== 'gif') {
+        const t = await ensureThumbnail(item.path);
+        item.thumbnail = t ? 'file:///' + t.replace(/\\/g, '/') : null;
+      } else {
+        item.thumbnail = 'file:///' + item.path.replace(/\\/g, '/');
+      }
+      item.url = 'file:///' + item.path.replace(/\\/g, '/');
+      const meta = readMeta(item.path);
+      item.captioned = !!meta.captioned;
+      item.isReel = !!meta.isReel;
+      item.parent = meta.parent || null;
+      item.hasTranscript = fs.existsSync(transcriptFile(item.path));
     }
-    item.url = 'file:///' + item.path.replace(/\\/g, '/');
-    const meta = readMeta(item.path);
-    item.captioned = !!meta.captioned;
-    item.isReel = !!meta.isReel;
-    item.parent = meta.parent || null;
-    item.hasTranscript = fs.existsSync(transcriptFile(item.path));
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, files.length) }, worker));
   return files;
 });
+
+// Windows can briefly hold a file lock right after a <video> element that had
+// it open gets unloaded — retry a few times instead of failing immediately.
+async function rmWithRetry(filePath, attempts = 6, delayMs = 150) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.rmSync(filePath, { force: true });
+      return;
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
 
 ipcMain.handle('library:delete', async (_e, filePath) => {
   const dir = libraryDir();
   if (!path.normalize(filePath).startsWith(path.normalize(dir))) throw new Error('Refusing to delete outside library');
-  fs.rmSync(filePath, { force: true });
+  await rmWithRetry(filePath);
   const thumb = path.join(thumbsDir(), path.basename(filePath).replace(/\.[^.]+$/, '') + '.jpg');
   fs.rmSync(thumb, { force: true });
   fs.rmSync(metaFile(filePath), { force: true });
@@ -559,19 +619,21 @@ ipcMain.handle('captions:transcribe', async (e, filePath) => {
 });
 
 ipcMain.handle('captions:burn', async (e, opts) => {
-  const { input, replace } = opts;
+  const { input, replace, style, mode } = opts;
   const dir = libraryDir();
   const base = baseName(input);
+  const styleStr = CAPTION_STYLES[style] || CAPTION_STYLES[DEFAULT_CAPTION_STYLE];
 
   const transcript = await transcribeVideo(input, (p) => e.sender.send('captions:progress', p));
-  const cues = transcriptToCues(transcript);
+  const cues = transcriptToCues(transcript, mode);
   if (!cues.length) throw new Error('No speech detected to caption');
 
-  const srtPath = path.join(app.getPath('temp'), `br-captions-${Date.now()}.srt`);
+  const work = tmpWorkDir();
+  const srtPath = path.join(work, `captions-${Date.now()}.srt`);
   fs.writeFileSync(srtPath, cuesToSrt(cues), 'utf8');
   const escapedSrt = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
-  const tempOut = path.join(app.getPath('temp'), `br-captioned-${Date.now()}.mp4`);
+  const tempOut = path.join(work, `captioned-${Date.now()}.mp4`);
   const inDur = await ffprobeDuration(input);
   const sendProgress = (secs) => {
     if (inDur) e.sender.send('captions:progress', { phase: 'burning', percent: Math.min(99, Math.round((secs / inDur) * 100)) });
@@ -580,7 +642,7 @@ ipcMain.handle('captions:burn', async (e, opts) => {
   try {
     await runFfmpeg([
       '-i', input,
-      '-vf', `subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=60'`,
+      '-vf', `subtitles='${escapedSrt}':force_style='${styleStr}'`,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '160k',
       '-movflags', '+faststart',
@@ -602,7 +664,7 @@ ipcMain.handle('captions:burn', async (e, opts) => {
     output = path.join(dir, base + '.mp4');
     let n = 1;
     while (fs.existsSync(output)) output = path.join(dir, `${base}-${n++}.mp4`);
-    fs.renameSync(tempOut, output);
+    moveFile(tempOut, output);
 
     if (metaFile(output) !== priorMetaPath) fs.rmSync(priorMetaPath, { force: true });
     if (transcriptFile(output) !== priorTranscriptPath) fs.rmSync(priorTranscriptPath, { force: true });
@@ -612,7 +674,7 @@ ipcMain.handle('captions:burn', async (e, opts) => {
     output = path.join(dir, `${base}-captioned.mp4`);
     let n = 1;
     while (fs.existsSync(output)) output = path.join(dir, `${base}-captioned-${n++}.mp4`);
-    fs.renameSync(tempOut, output);
+    moveFile(tempOut, output);
     writeMeta(output, { captioned: true, parent: path.basename(input) });
     writeTranscript(output, transcript);
   }
