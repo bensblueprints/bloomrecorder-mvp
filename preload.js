@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld('api', {
   makeReels: (opts) => ipcRenderer.invoke('reels:make', opts),
   onReelsProgress: (cb) => ipcRenderer.on('reels:progress', (_e, data) => cb(data)),
 
+  detectSilences: (opts) => ipcRenderer.invoke('silence:detect', opts),
+  applySilenceCuts: (opts) => ipcRenderer.invoke('silence:apply', opts),
+  onSilenceProgress: (cb) => ipcRenderer.on('silence:progress', (_e, data) => cb(data)),
+
   exportRun: (opts) => ipcRenderer.invoke('export:run', opts),
   onExportProgress: (cb) => ipcRenderer.on('export:progress', (_e, data) => cb(data)),
 

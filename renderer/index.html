@@ -296,6 +296,11 @@
           <span class="switch"></span>
           Camera on top <span class="hint-inline">off = screen on top, camera on bottom</span>
         </label>
+        <label class="mic-toggle" for="short-fit-full">
+          <input type="checkbox" id="short-fit-full" checked />
+          <span class="switch"></span>
+          Show full screen <span class="hint-inline">on = letterbox to fit everything, off = crop to fill (loses edges)</span>
+        </label>
         <button id="build-short" class="primary-btn alt">Build Short (9:16)</button>
       </div>
       <div id="short-progress" class="progress hidden">
@@ -361,6 +366,63 @@
       <div id="reels-progress" class="progress hidden">
         <div class="progress-track"><div id="reels-progress-fill" class="progress-fill"></div></div>
         <div id="reels-progress-label" class="progress-label">Analyzing… 0%</div>
+      </div>
+
+      <div id="silence-entry-block" class="short-block">
+        <button id="open-silence-editor" class="primary-btn alt">Remove Silences…</button>
+        <div class="hint-inline">Detects quiet gaps, lets you review/trim/undo before cutting anything.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SILENCE EDITOR MODAL ================= -->
+  <div id="silence-modal" class="modal hidden">
+    <div class="modal-card silence-card">
+      <div class="modal-head">
+        <div id="silence-modal-title" class="modal-title">Remove Silences</div>
+        <button id="silence-modal-close" class="icon-btn" title="Close">✕</button>
+      </div>
+
+      <video id="silence-player" controls></video>
+
+      <div class="device-row">
+        <label class="device-label">Sensitivity</label>
+        <select id="silence-sensitivity" class="device-select">
+          <option value="low">Low — only long, dead-quiet gaps</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High — catches short pauses too</option>
+        </select>
+        <label class="device-label">Min length</label>
+        <select id="silence-min-len" class="device-select">
+          <option value="0.3">0.3s</option>
+          <option value="0.5" selected>0.5s</option>
+          <option value="1">1s</option>
+          <option value="2">2s</option>
+        </select>
+        <button id="detect-silences" class="primary-btn alt">Detect Silences</button>
+      </div>
+
+      <div id="silence-timeline" class="silence-timeline hidden">
+        <div id="silence-timeline-track" class="silence-timeline-track"></div>
+      </div>
+
+      <div id="silence-list" class="silence-list">
+        <div class="empty">Click "Detect Silences" to scan this clip.</div>
+      </div>
+
+      <div class="export-row">
+        <button id="silence-undo" class="ghost-btn" disabled>Undo</button>
+        <div class="spacer"></div>
+        <label class="mic-toggle" for="silence-replace">
+          <input type="checkbox" id="silence-replace" />
+          <span class="switch"></span>
+          Replace original <span class="hint-inline">off = save a new trimmed copy</span>
+        </label>
+        <button id="apply-silence-cuts" class="primary-btn" disabled>Apply Cuts</button>
+      </div>
+      <div id="silence-progress" class="progress hidden">
+        <div class="progress-track"><div id="silence-progress-fill" class="progress-fill"></div></div>
+        <div id="silence-progress-label" class="progress-label">Removing… 0%</div>
       </div>
     </div>
   </div>

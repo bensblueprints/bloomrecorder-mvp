@@ -1143,14 +1143,17 @@ $('#build-short').addEventListener('click', async () => {
   $('#build-short').disabled = true;
 
   try {
+    const fitFullScreen = $('#short-fit-full').checked;
     const res = await window.api.buildShort(combine ? {
       combine: true,
       screenPath: currentPair.screenPath,
       cameraPath: currentPair.cameraPath,
-      cameraOnTop: $('#short-cam-top').checked
+      cameraOnTop: $('#short-cam-top').checked,
+      fitFullScreen
     } : {
       combine: false,
-      input: currentItem.path
+      input: currentItem.path,
+      fitFullScreen
     });
     fill.style.width = '100%';
     label.textContent = 'Done → ' + res.output.split(/[\\/]/).pop() + ' (' + fmtSize(res.size) + ')';

@@ -741,6 +741,119 @@ ipcMain.handle('captions:burn', async (e, opts) => {
   return { output, size: fs.statSync(output).size };
 });
 
+// ---------------------------------------------------------------------------
+// Silence remover — ffmpeg silencedetect + a select/aselect cut pass
+// ---------------------------------------------------------------------------
+const SILENCE_THRESHOLDS = { low: '-40dB', medium: '-30dB', high: '-21dB' };
+const DEFAULT_SILENCE_SENSITIVITY = 'medium';
+
+function parseSilences(stderrText, totalDuration) {
+  const lines = stderrText.split('\n');
+  const silences = [];
+  let pendingStart = null;
+  for (const line of lines) {
+    const sm = /silence_start:\s*(-?\d+(?:\.\d+)?)/.exec(line);
+    if (sm) { pendingStart = Math.max(0, Number(sm[1])); continue; }
+    const em = /silence_end:\s*(-?\d+(?:\.\d+)?)/.exec(line);
+    if (em && pendingStart != null) {
+      const end = Number(em[1]);
+      if (end > pendingStart) silences.push({ start: pendingStart, end });
+      pendingStart = null;
+    }
+  }
+  if (pendingStart != null && totalDuration && totalDuration > pendingStart) {
+    silences.push({ start: pendingStart, end: totalDuration });
+  }
+  return silences;
+}
+
+function detectSilences(input, sensitivity, minDuration, duration) {
+  const threshold = SILENCE_THRESHOLDS[sensitivity] || SILENCE_THRESHOLDS[DEFAULT_SILENCE_SENSITIVITY];
+  const minDur = Math.max(0.05, Number(minDuration) || 0.5);
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, [
+      '-hide_banner', '-i', input,
+      '-af', `silencedetect=noise=${threshold}:d=${minDur}`,
+      '-f', 'null', '-'
+    ], { windowsHide: true });
+    let out = '';
+    proc.stderr.on('data', (d) => { out += d.toString(); });
+    proc.on('close', () => resolve(parseSilences(out, duration)));
+    proc.on('error', reject);
+  });
+}
+
+ipcMain.handle('silence:detect', async (_e, opts) => {
+  const { input, sensitivity, minDuration } = opts;
+  const duration = await ffprobeDuration(input);
+  const silences = await detectSilences(input, sensitivity, minDuration, duration);
+  return { silences, duration };
+});
+
+// Removes each [start,end) range from both video and audio in one ffmpeg
+// pass via select/aselect — no intermediate files, no re-cutting per segment.
+ipcMain.handle('silence:apply', async (e, opts) => {
+  const { input, cuts, replace } = opts;
+  if (!Array.isArray(cuts) || !cuts.length) throw new Error('No cuts to apply');
+  const dir = libraryDir();
+  const base = baseName(input);
+
+  const sorted = cuts
+    .map((c) => ({ start: Math.max(0, Number(c.start)), end: Math.max(0, Number(c.end)) }))
+    .filter((c) => c.end > c.start)
+    .sort((a, b) => a.start - b.start);
+  if (!sorted.length) throw new Error('No valid cuts to apply');
+
+  const between = sorted.map((c) => `between(t,${c.start.toFixed(3)},${c.end.toFixed(3)})`).join('+');
+  const keepExpr = `not(${between})`;
+
+  const work = tmpWorkDir();
+  const tempOut = path.join(work, `desilenced-${Date.now()}.mp4`);
+  const inDur = await ffprobeDuration(input);
+  const sendProgress = (secs) => {
+    if (inDur) e.sender.send('silence:progress', { percent: Math.min(99, Math.round((secs / inDur) * 100)) });
+  };
+
+  await runFfmpeg([
+    '-i', input,
+    '-vf', `select='${keepExpr}',setpts=N/FRAME_RATE/TB`,
+    '-af', `aselect='${keepExpr}',asetpts=N/SR/TB`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '160k',
+    '-movflags', '+faststart',
+    tempOut
+  ], sendProgress);
+
+  let output;
+  if (replace) {
+    const priorMeta = readMeta(input);
+    const priorMetaPath = metaFile(input);
+    const priorTranscriptPath = transcriptFile(input);
+
+    fs.rmSync(input, { force: true });
+    fs.rmSync(path.join(thumbsDir(), base + '.jpg'), { force: true });
+
+    output = path.join(dir, base + '.mp4');
+    let n = 1;
+    while (fs.existsSync(output)) output = path.join(dir, `${base}-${n++}.mp4`);
+    moveFile(tempOut, output);
+
+    if (metaFile(output) !== priorMetaPath) fs.rmSync(priorMetaPath, { force: true });
+    if (transcriptFile(output) !== priorTranscriptPath) fs.rmSync(priorTranscriptPath, { force: true });
+    writeMeta(output, priorMeta);
+  } else {
+    output = path.join(dir, `${base}-desilenced.mp4`);
+    let n = 1;
+    while (fs.existsSync(output)) output = path.join(dir, `${base}-desilenced-${n++}.mp4`);
+    moveFile(tempOut, output);
+    writeMeta(output, { parent: path.basename(input) });
+  }
+
+  await ensureThumbnail(output);
+  e.sender.send('silence:progress', { percent: 100 });
+  return { output, size: fs.statSync(output).size };
+});
+
 const REEL_MAX_CLIPS = 20; // sane ceiling on a single "make as many as it can" pass
 
 ipcMain.handle('reels:make', async (e, opts) => {
@@ -853,7 +966,7 @@ ipcMain.handle('library:find-pair', async (_e, filePath) => {
 });
 
 ipcMain.handle('shorts:build', async (e, opts) => {
-  const { combine, input, screenPath, cameraPath, cameraOnTop } = opts;
+  const { combine, input, screenPath, cameraPath, cameraOnTop, fitFullScreen } = opts;
   const dir = libraryDir();
 
   if (combine && screenPath && cameraPath) {
@@ -873,12 +986,18 @@ ipcMain.handle('shorts:build', async (e, opts) => {
       if (outDur && Number.isFinite(outDur)) e.sender.send('shorts:progress', { output, percent: Math.min(99, Math.round((secs / outDur) * 100)) });
     };
 
+    // fitFullScreen: letterbox each half to show the whole frame (no cropping)
+    // instead of scaling-to-cover + cropping the overflow off the sides.
+    const half = fitFullScreen
+      ? 'scale=1080:960:force_original_aspect_ratio=decrease,pad=1080:960:(ow-iw)/2:(oh-ih)/2:color=black'
+      : 'scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960';
+
     await runFfmpeg([
       '-i', topPath,
       '-i', bottomPath,
       '-filter_complex',
-      '[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top];' +
-      '[1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];' +
+      `[0:v]${half}[top];` +
+      `[1:v]${half}[bottom];` +
       '[top][bottom]vstack=inputs=2[v]',
       '-map', '[v]', '-map', `${audioIdx}:a?`,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
@@ -892,8 +1011,10 @@ ipcMain.handle('shorts:build', async (e, opts) => {
     return { output, size: fs.statSync(output).size };
   }
 
-  // Single video, no pair (or combine turned off) — center-crop the whole
-  // clip to 9:16, same technique as Make Reels' per-window crop.
+  // Single video, no pair (or combine turned off) — reframe the whole clip
+  // to 9:16. fitFullScreen letterboxes to show every pixel of the source
+  // (default for screen recordings, where cropping cuts off UI); off does
+  // the old scale-to-cover + crop (fills the frame, loses the edges).
   const base = baseName(input);
   let output = path.join(dir, `${base}-short.mp4`);
   let n = 1;
@@ -904,9 +1025,13 @@ ipcMain.handle('shorts:build', async (e, opts) => {
     if (inDur) e.sender.send('shorts:progress', { output, percent: Math.min(99, Math.round((secs / inDur) * 100)) });
   };
 
+  const vf = fitFullScreen
+    ? 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black'
+    : 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920';
+
   await runFfmpeg([
     '-i', input,
-    '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
+    '-vf', vf,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '160k',
     '-movflags', '+faststart',
