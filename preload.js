@@ -24,9 +24,17 @@ contextBridge.exposeInMainWorld('api', {
 
   listLibrary: () => ipcRenderer.invoke('library:list'),
   deleteRecording: (p) => ipcRenderer.invoke('library:delete', p),
+  renameRecording: (p, newBaseName) => ipcRenderer.invoke('library:rename', p, newBaseName),
   openFolder: () => ipcRenderer.invoke('library:open-folder'),
   reveal: (p) => ipcRenderer.invoke('library:reveal', p),
   getDuration: (p) => ipcRenderer.invoke('media:duration', p),
+
+  transcribe: (p) => ipcRenderer.invoke('captions:transcribe', p),
+  burnCaptions: (opts) => ipcRenderer.invoke('captions:burn', opts),
+  onCaptionsProgress: (cb) => ipcRenderer.on('captions:progress', (_e, data) => cb(data)),
+
+  makeReels: (opts) => ipcRenderer.invoke('reels:make', opts),
+  onReelsProgress: (cb) => ipcRenderer.on('reels:progress', (_e, data) => cb(data)),
 
   exportRun: (opts) => ipcRenderer.invoke('export:run', opts),
   onExportProgress: (cb) => ipcRenderer.on('export:progress', (_e, data) => cb(data)),

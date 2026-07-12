@@ -878,19 +878,39 @@ window.api.onStreamStatus(({ type, message }) => {
 // ---------------------------------------------------------------------------
 // Library
 // ---------------------------------------------------------------------------
+let libItems = [];
+let libSort = 'date-desc';
+let libFilters = new Set(); // subset of 'captioned' | 'reel'
+
 async function renderLibrary() {
   const grid = $('#library-grid');
-  let items;
   try {
-    items = await window.api.listLibrary();
+    libItems = await window.api.listLibrary();
   } catch (err) {
     grid.innerHTML = '<div class="empty">Failed to read library: ' + err.message + '</div>';
     return;
   }
-  if (!items.length) {
+  if (!libItems.length) {
     grid.innerHTML = '<div class="empty">No recordings yet — make your first one!</div>';
     return;
   }
+
+  let items = libItems.slice();
+  if (libFilters.has('captioned')) items = items.filter((i) => i.captioned);
+  if (libFilters.has('reel')) items = items.filter((i) => i.isReel);
+
+  items.sort((a, b) => {
+    if (libSort === 'date-asc') return a.mtime - b.mtime;
+    if (libSort === 'name') return a.name.localeCompare(b.name);
+    if (libSort === 'size') return b.size - a.size;
+    return b.mtime - a.mtime; // date-desc
+  });
+
+  if (!items.length) {
+    grid.innerHTML = '<div class="empty">No recordings match this filter.</div>';
+    return;
+  }
+
   grid.innerHTML = '';
   for (const item of items) {
     const card = document.createElement('div');
@@ -915,13 +935,36 @@ async function renderLibrary() {
     const badge = document.createElement('span');
     badge.className = 'lib-badge';
     badge.textContent = item.ext;
-    meta.append(badge, fmtSize(item.size), new Date(item.mtime).toLocaleString());
+    meta.append(badge);
+    if (item.captioned) {
+      const cb = document.createElement('span');
+      cb.className = 'lib-badge captioned';
+      cb.textContent = 'CC';
+      meta.append(cb);
+    }
+    if (item.isReel) {
+      const rb = document.createElement('span');
+      rb.className = 'lib-badge reel';
+      rb.textContent = 'Reel';
+      meta.append(rb);
+    }
+    meta.append(fmtSize(item.size), new Date(item.mtime).toLocaleString());
     info.append(name, meta);
     card.append(thumb, info);
     card.addEventListener('click', () => openModal(item));
     grid.appendChild(card);
   }
 }
+
+$('#lib-sort').addEventListener('change', () => { libSort = $('#lib-sort').value; renderLibrary(); });
+document.querySelectorAll('.chip[data-filter]').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    const f = chip.dataset.filter;
+    if (libFilters.has(f)) libFilters.delete(f); else libFilters.add(f);
+    chip.classList.toggle('active', libFilters.has(f));
+    renderLibrary();
+  });
+});
 
 $('#open-folder').addEventListener('click', () => window.api.openFolder());
 
@@ -930,11 +973,15 @@ $('#open-folder').addEventListener('click', () => window.api.openFolder());
 // ---------------------------------------------------------------------------
 let currentPair = null;
 let buildingShort = false;
+let capturingCaptions = false;
+let makingReels = false;
 
 async function openModal(item) {
   currentItem = item;
   currentPair = null;
-  $('#modal-title').textContent = item.name;
+  const dotIdx = item.name.lastIndexOf('.');
+  $('#modal-title-input').value = dotIdx > -1 ? item.name.slice(0, dotIdx) : item.name;
+  $('#modal-ext').textContent = '.' + item.ext;
   const player = $('#player');
   player.src = item.url;
   $('#trim-start').value = 0;
@@ -943,11 +990,20 @@ async function openModal(item) {
   $('#export-progress').classList.add('hidden');
   $('#short-block').classList.add('hidden');
   $('#short-progress').classList.add('hidden');
+  $('#captions-progress').classList.add('hidden');
+  $('#captions-replace').checked = false;
+  $('#reels-progress').classList.add('hidden');
   $('#modal').classList.remove('hidden');
 
   const canExport = item.ext !== 'gif';
   $('#export-mp4').disabled = !canExport || exporting;
   $('#export-gif').disabled = !canExport || exporting;
+
+  const canTranscribe = item.ext !== 'gif';
+  $('#captions-block').classList.toggle('hidden', !canTranscribe);
+  $('#add-captions').disabled = !canTranscribe || capturingCaptions;
+  $('#reels-block').classList.toggle('hidden', !canTranscribe);
+  $('#make-reels').disabled = !canTranscribe || makingReels;
 
   // WebM from MediaRecorder often reports Infinity duration; ask ffmpeg.
   let dur = null;
@@ -981,6 +1037,23 @@ $('#modal-close').addEventListener('click', closeModal);
 $('#modal').addEventListener('click', (e) => { if (e.target === $('#modal')) closeModal(); });
 
 $('#reveal-file').addEventListener('click', () => currentItem && window.api.reveal(currentItem.path));
+
+$('#rename-file').addEventListener('click', async () => {
+  if (!currentItem) return;
+  const newBase = $('#modal-title-input').value.trim();
+  if (!newBase) { toast('Enter a name', true); return; }
+  try {
+    const newPath = await window.api.renameRecording(currentItem.path, newBase);
+    toast('Renamed to ' + newPath.split(/[\\/]/).pop());
+    closeModal();
+    renderLibrary();
+  } catch (err) {
+    toast('Rename failed: ' + err.message, true);
+  }
+});
+$('#modal-title-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('#rename-file').click();
+});
 
 $('#delete-file').addEventListener('click', async () => {
   if (!currentItem) return;
@@ -1073,6 +1146,100 @@ window.api.onShortsProgress(({ percent }) => {
   if (!buildingShort) return;
   $('#short-progress-fill').style.width = percent + '%';
   $('#short-progress-label').textContent = 'Building… ' + percent + '%';
+});
+
+// ---------------------------------------------------------------------------
+// Captions (local transcription + burn-in)
+// ---------------------------------------------------------------------------
+function describeProgress(p) {
+  if (!p) return '';
+  if (p.phase === 'decoding-audio') return 'Decoding audio…';
+  if (p.phase === 'downloading-model') return `Downloading speech model (${p.file || ''} ${p.percent || 0}%)…`;
+  if (p.phase === 'transcribing') return 'Transcribing…';
+  if (p.phase === 'scoring') return 'Scoring moments…';
+  if (p.phase === 'burning') return `Burning captions… ${p.percent || 0}%`;
+  if (p.phase === 'cutting') return `Cutting clip ${p.index || 1}/${p.total || 1}… ${p.percent || 0}%`;
+  if (p.phase === 'done') return 'Done';
+  return p.phase || '';
+}
+
+$('#add-captions').addEventListener('click', async () => {
+  if (!currentItem || capturingCaptions) return;
+  capturingCaptions = true;
+  const progWrap = $('#captions-progress');
+  const fill = $('#captions-progress-fill');
+  const label = $('#captions-progress-label');
+  progWrap.classList.remove('hidden');
+  fill.style.width = '2%';
+  label.textContent = 'Starting…';
+  $('#add-captions').disabled = true;
+
+  try {
+    const res = await window.api.burnCaptions({
+      input: currentItem.path,
+      replace: $('#captions-replace').checked
+    });
+    fill.style.width = '100%';
+    label.textContent = 'Done → ' + res.output.split(/[\\/]/).pop() + ' (' + fmtSize(res.size) + ')';
+    toast('Captions added');
+    renderLibrary();
+  } catch (err) {
+    label.textContent = 'Captioning failed';
+    toast('Add Captions failed: ' + err.message, true, 6000);
+  } finally {
+    capturingCaptions = false;
+    $('#add-captions').disabled = false;
+  }
+});
+
+window.api.onCaptionsProgress((p) => {
+  if (!capturingCaptions) return;
+  const fill = $('#captions-progress-fill');
+  const label = $('#captions-progress-label');
+  if (typeof p.percent === 'number') fill.style.width = p.percent + '%';
+  label.textContent = describeProgress(p);
+});
+
+// ---------------------------------------------------------------------------
+// Make Reels (local heuristic viral-clip generator)
+// ---------------------------------------------------------------------------
+$('#make-reels').addEventListener('click', async () => {
+  if (!currentItem || makingReels) return;
+  makingReels = true;
+  const progWrap = $('#reels-progress');
+  const fill = $('#reels-progress-fill');
+  const label = $('#reels-progress-label');
+  progWrap.classList.remove('hidden');
+  fill.style.width = '2%';
+  label.textContent = 'Starting…';
+  $('#make-reels').disabled = true;
+
+  try {
+    const res = await window.api.makeReels({
+      input: currentItem.path,
+      maxLength: parseInt($('#reel-length').value, 10)
+    });
+    fill.style.width = '100%';
+    label.textContent = res.clips.length
+      ? `Made ${res.clips.length} reel${res.clips.length === 1 ? '' : 's'}`
+      : 'No strong moments found';
+    toast(res.clips.length ? `Made ${res.clips.length} reel${res.clips.length === 1 ? '' : 's'}` : 'No standout moments found', !res.clips.length);
+    renderLibrary();
+  } catch (err) {
+    label.textContent = 'Reel generation failed';
+    toast('Make Reels failed: ' + err.message, true, 6000);
+  } finally {
+    makingReels = false;
+    $('#make-reels').disabled = false;
+  }
+});
+
+window.api.onReelsProgress((p) => {
+  if (!makingReels) return;
+  const fill = $('#reels-progress-fill');
+  const label = $('#reels-progress-label');
+  if (typeof p.percent === 'number') fill.style.width = p.percent + '%';
+  label.textContent = describeProgress(p);
 });
 
 // ---------------------------------------------------------------------------

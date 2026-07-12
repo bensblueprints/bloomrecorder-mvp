@@ -228,6 +228,21 @@
             <p class="muted">Everything stays on this machine. Export MP4 or GIF anytime.</p>
           </div>
         </header>
+        <div class="library-controls">
+          <div class="device-row">
+            <label class="device-label">Sort by</label>
+            <select id="lib-sort" class="device-select">
+              <option value="date-desc">Newest first</option>
+              <option value="date-asc">Oldest first</option>
+              <option value="name">Name</option>
+              <option value="size">Size</option>
+            </select>
+          </div>
+          <div class="lib-filter-chips">
+            <button class="chip" data-filter="captioned" title="Show only captioned files">Captioned</button>
+            <button class="chip" data-filter="reel" title="Show only reel clips">Reels</button>
+          </div>
+        </div>
         <div id="library-grid" class="library-grid">
           <div class="empty">No recordings yet — make your first one!</div>
         </div>
@@ -239,7 +254,9 @@
   <div id="modal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
-        <div id="modal-title" class="modal-title">recording.webm</div>
+        <input id="modal-title-input" class="modal-title-input" value="recording.webm" spellcheck="false" />
+        <span id="modal-ext" class="modal-ext"></span>
+        <button id="rename-file" class="ghost-btn" title="Rename">Rename</button>
         <button id="modal-close" class="icon-btn" title="Close">✕</button>
       </div>
       <video id="player" controls></video>
@@ -276,6 +293,36 @@
       <div id="short-progress" class="progress hidden">
         <div class="progress-track"><div id="short-progress-fill" class="progress-fill"></div></div>
         <div id="short-progress-label" class="progress-label">Building… 0%</div>
+      </div>
+
+      <div id="captions-block" class="short-block">
+        <label class="mic-toggle" for="captions-replace">
+          <input type="checkbox" id="captions-replace" />
+          <span class="switch"></span>
+          Replace original <span class="hint-inline">off = save a new captioned copy</span>
+        </label>
+        <button id="add-captions" class="primary-btn alt">Add Captions</button>
+      </div>
+      <div id="captions-progress" class="progress hidden">
+        <div class="progress-track"><div id="captions-progress-fill" class="progress-fill"></div></div>
+        <div id="captions-progress-label" class="progress-label">Transcribing… 0%</div>
+      </div>
+
+      <div id="reels-block" class="short-block">
+        <div class="device-row">
+          <label class="device-label">Max clip length</label>
+          <select id="reel-length" class="device-select">
+            <option value="15">Under 15s</option>
+            <option value="30" selected>Under 30s</option>
+            <option value="60">Under 60s</option>
+          </select>
+        </div>
+        <button id="make-reels" class="primary-btn alt">Make Viral Reels</button>
+        <div class="hint-inline">Local heuristic — transcribes, scores speech-energy/hook moments, cuts as many non-overlapping vertical clips as it finds.</div>
+      </div>
+      <div id="reels-progress" class="progress hidden">
+        <div class="progress-track"><div id="reels-progress-fill" class="progress-fill"></div></div>
+        <div id="reels-progress-label" class="progress-label">Analyzing… 0%</div>
       </div>
     </div>
   </div>

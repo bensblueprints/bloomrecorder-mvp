@@ -42,6 +42,42 @@ function thumbsDir() {
   return dir;
 }
 
+function metaDir() {
+  const dir = path.join(libraryDir(), '.meta');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function baseName(videoPath) {
+  return path.basename(videoPath).replace(/\.[^.]+$/, '');
+}
+
+function metaFile(videoPath) {
+  return path.join(metaDir(), baseName(videoPath) + '.json');
+}
+
+function readMeta(videoPath) {
+  try { return JSON.parse(fs.readFileSync(metaFile(videoPath), 'utf8')); } catch { return {}; }
+}
+
+function writeMeta(videoPath, patch) {
+  const merged = { ...readMeta(videoPath), ...patch };
+  fs.writeFileSync(metaFile(videoPath), JSON.stringify(merged, null, 2));
+  return merged;
+}
+
+function transcriptFile(videoPath) {
+  return path.join(metaDir(), baseName(videoPath) + '.transcript.json');
+}
+
+function readTranscript(videoPath) {
+  try { return JSON.parse(fs.readFileSync(transcriptFile(videoPath), 'utf8')); } catch { return null; }
+}
+
+function writeTranscript(videoPath, data) {
+  fs.writeFileSync(transcriptFile(videoPath), JSON.stringify(data));
+}
+
 // ---------------------------------------------------------------------------
 // ffmpeg helpers
 // ---------------------------------------------------------------------------
@@ -91,6 +127,116 @@ async function ensureThumbnail(videoPath) {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Local transcription (Whisper, via @huggingface/transformers / ONNX runtime)
+// ---------------------------------------------------------------------------
+let asrPipelinePromise = null;
+
+function getAsrPipeline(onModelProgress) {
+  if (!asrPipelinePromise) {
+    asrPipelinePromise = (async () => {
+      const { pipeline, env } = await import('@huggingface/transformers');
+      env.cacheDir = path.join(app.getPath('userData'), 'models');
+      return pipeline('automatic-speech-recognition', 'Xenova/whisper-base.en', {
+        dtype: 'q8',
+        progress_callback: onModelProgress
+      });
+    })();
+  }
+  return asrPipelinePromise;
+}
+
+// Decode to 16kHz mono float32 PCM — the sample format Whisper expects.
+function extractPcm16k(videoPath) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', videoPath,
+      '-f', 'f32le', '-ac', '1', '-ar', '16000',
+      'pipe:1'
+    ], { windowsHide: true });
+    const chunks = [];
+    let stderr = '';
+    proc.stdout.on('data', (d) => chunks.push(d));
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code !== 0) { reject(new Error(`ffmpeg PCM extract failed: ${stderr.slice(-500)}`)); return; }
+      const buf = Buffer.concat(chunks);
+      // ArrayBuffer.slice() always starts at byte 0, guaranteeing 4-byte alignment for Float32Array.
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length);
+      resolve(new Float32Array(ab));
+    });
+  });
+}
+
+// Transcribes once, caches word-level timestamps to a sidecar so captions
+// and the reel-clipper can both reuse the same run.
+async function transcribeVideo(videoPath, onProgress) {
+  const cached = readTranscript(videoPath);
+  if (cached) return cached;
+
+  if (onProgress) onProgress({ phase: 'decoding-audio' });
+  const audio = await extractPcm16k(videoPath);
+
+  const transcriber = await getAsrPipeline((p) => {
+    if (onProgress && p && p.status === 'progress') {
+      onProgress({ phase: 'downloading-model', file: p.file, percent: Math.round(p.progress || 0) });
+    }
+  });
+
+  if (onProgress) onProgress({ phase: 'transcribing' });
+  const result = await transcriber(audio, {
+    return_timestamps: 'word',
+    chunk_length_s: 30,
+    stride_length_s: 5
+  });
+
+  const words = (result.chunks || [])
+    .map((c) => ({
+      text: c.text.trim(),
+      start: c.timestamp[0],
+      end: c.timestamp[1] != null ? c.timestamp[1] : c.timestamp[0] + 0.3
+    }))
+    .filter((w) => w.text);
+
+  const transcript = { text: (result.text || '').trim(), words };
+  writeTranscript(videoPath, transcript);
+  if (onProgress) onProgress({ phase: 'done' });
+  return transcript;
+}
+
+// Groups word-level timestamps into short caption cues (~4 words / ~2.2s max).
+function transcriptToCues(transcript) {
+  const cues = [];
+  let cur = [];
+  const flush = () => {
+    if (!cur.length) return;
+    cues.push({ start: cur[0].start, end: cur[cur.length - 1].end, text: cur.map((w) => w.text).join(' ') });
+    cur = [];
+  };
+  for (const w of transcript.words) {
+    cur.push(w);
+    const span = cur[cur.length - 1].end - cur[0].start;
+    if (cur.length >= 6 || span >= 2.2 || /[.!?]$/.test(w.text)) flush();
+  }
+  flush();
+  return cues;
+}
+
+function srtTimestamp(t) {
+  const ms = Math.max(0, Math.round(t * 1000));
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const msRem = ms % 1000;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(msRem).padStart(3, '0')}`;
+}
+
+function cuesToSrt(cues) {
+  return cues.map((c, i) => `${i + 1}\n${srtTimestamp(c.start)} --> ${srtTimestamp(c.end)}\n${c.text}\n`).join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +380,11 @@ ipcMain.handle('library:list', async () => {
       item.thumbnail = 'file:///' + item.path.replace(/\\/g, '/');
     }
     item.url = 'file:///' + item.path.replace(/\\/g, '/');
+    const meta = readMeta(item.path);
+    item.captioned = !!meta.captioned;
+    item.isReel = !!meta.isReel;
+    item.parent = meta.parent || null;
+    item.hasTranscript = fs.existsSync(transcriptFile(item.path));
   }
   return files;
 });
@@ -244,7 +395,55 @@ ipcMain.handle('library:delete', async (_e, filePath) => {
   fs.rmSync(filePath, { force: true });
   const thumb = path.join(thumbsDir(), path.basename(filePath).replace(/\.[^.]+$/, '') + '.jpg');
   fs.rmSync(thumb, { force: true });
+  fs.rmSync(metaFile(filePath), { force: true });
+  fs.rmSync(transcriptFile(filePath), { force: true });
   return true;
+});
+
+ipcMain.handle('library:rename', async (_e, filePath, newBaseName) => {
+  const dir = libraryDir();
+  if (!path.normalize(filePath).startsWith(path.normalize(dir))) throw new Error('Refusing to rename outside library');
+  const safe = String(newBaseName).replace(/[\\/:*?"<>|]/g, '').trim();
+  if (!safe) throw new Error('Invalid name');
+
+  const ext = path.extname(filePath);
+  let dest = path.join(dir, safe + ext);
+  let n = 1;
+  while (fs.existsSync(dest) && path.normalize(dest) !== path.normalize(filePath)) {
+    dest = path.join(dir, `${safe}-${n++}${ext}`);
+  }
+  if (path.normalize(dest) === path.normalize(filePath)) return filePath;
+
+  const oldBase = baseName(filePath);
+  const newBase = baseName(dest);
+
+  fs.renameSync(filePath, dest);
+
+  const oldThumb = path.join(thumbsDir(), oldBase + '.jpg');
+  if (fs.existsSync(oldThumb)) fs.renameSync(oldThumb, path.join(thumbsDir(), newBase + '.jpg'));
+
+  const oldMetaPath = path.join(metaDir(), oldBase + '.json');
+  if (fs.existsSync(oldMetaPath)) fs.renameSync(oldMetaPath, path.join(metaDir(), newBase + '.json'));
+
+  const oldTranscriptPath = path.join(metaDir(), oldBase + '.transcript.json');
+  if (fs.existsSync(oldTranscriptPath)) fs.renameSync(oldTranscriptPath, path.join(metaDir(), newBase + '.transcript.json'));
+
+  // Keep any derivative files' "parent" links pointing at the new filename.
+  const oldFileName = path.basename(filePath);
+  const newFileName = path.basename(dest);
+  for (const f of fs.readdirSync(metaDir())) {
+    if (!f.endsWith('.json') || f.endsWith('.transcript.json')) continue;
+    const full = path.join(metaDir(), f);
+    try {
+      const m = JSON.parse(fs.readFileSync(full, 'utf8'));
+      if (m.parent === oldFileName) {
+        m.parent = newFileName;
+        fs.writeFileSync(full, JSON.stringify(m, null, 2));
+      }
+    } catch {}
+  }
+
+  return dest;
 });
 
 ipcMain.handle('library:open-folder', async () => {
@@ -258,6 +457,74 @@ ipcMain.handle('library:reveal', async (_e, filePath) => {
 });
 
 ipcMain.handle('media:duration', async (_e, filePath) => ffprobeDuration(filePath));
+
+ipcMain.handle('captions:transcribe', async (e, filePath) => {
+  return transcribeVideo(filePath, (p) => e.sender.send('captions:progress', p));
+});
+
+ipcMain.handle('captions:burn', async (e, opts) => {
+  const { input, replace } = opts;
+  const dir = libraryDir();
+  const base = baseName(input);
+
+  const transcript = await transcribeVideo(input, (p) => e.sender.send('captions:progress', p));
+  const cues = transcriptToCues(transcript);
+  if (!cues.length) throw new Error('No speech detected to caption');
+
+  const srtPath = path.join(app.getPath('temp'), `br-captions-${Date.now()}.srt`);
+  fs.writeFileSync(srtPath, cuesToSrt(cues), 'utf8');
+  const escapedSrt = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
+
+  const tempOut = path.join(app.getPath('temp'), `br-captioned-${Date.now()}.mp4`);
+  const inDur = await ffprobeDuration(input);
+  const sendProgress = (secs) => {
+    if (inDur) e.sender.send('captions:progress', { phase: 'burning', percent: Math.min(99, Math.round((secs / inDur) * 100)) });
+  };
+
+  try {
+    await runFfmpeg([
+      '-i', input,
+      '-vf', `subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=60'`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '160k',
+      '-movflags', '+faststart',
+      tempOut
+    ], sendProgress);
+  } finally {
+    fs.rmSync(srtPath, { force: true });
+  }
+
+  let output;
+  if (replace) {
+    const priorMeta = readMeta(input);
+    const priorMetaPath = metaFile(input);
+    const priorTranscriptPath = transcriptFile(input);
+
+    fs.rmSync(input, { force: true });
+    fs.rmSync(path.join(thumbsDir(), base + '.jpg'), { force: true });
+
+    output = path.join(dir, base + '.mp4');
+    let n = 1;
+    while (fs.existsSync(output)) output = path.join(dir, `${base}-${n++}.mp4`);
+    fs.renameSync(tempOut, output);
+
+    if (metaFile(output) !== priorMetaPath) fs.rmSync(priorMetaPath, { force: true });
+    if (transcriptFile(output) !== priorTranscriptPath) fs.rmSync(priorTranscriptPath, { force: true });
+    writeMeta(output, { ...priorMeta, captioned: true });
+    writeTranscript(output, transcript);
+  } else {
+    output = path.join(dir, `${base}-captioned.mp4`);
+    let n = 1;
+    while (fs.existsSync(output)) output = path.join(dir, `${base}-captioned-${n++}.mp4`);
+    fs.renameSync(tempOut, output);
+    writeMeta(output, { captioned: true, parent: path.basename(input) });
+    writeTranscript(output, transcript);
+  }
+
+  await ensureThumbnail(output);
+  e.sender.send('captions:progress', { phase: 'done' });
+  return { output, size: fs.statSync(output).size };
+});
 
 ipcMain.handle('export:run', async (e, opts) => {
   const { input, format, trimStart, trimEnd } = opts;
