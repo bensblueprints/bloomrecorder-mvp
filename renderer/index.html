@@ -259,7 +259,10 @@
         <button id="rename-file" class="ghost-btn" title="Rename">Rename</button>
         <button id="modal-close" class="icon-btn" title="Close">✕</button>
       </div>
-      <video id="player" controls></video>
+      <div id="player-wrap" class="player-wrap">
+        <video id="player" controls></video>
+        <div id="captions-preview" class="captions-preview hidden"></div>
+      </div>
       <div class="trim-row">
         <div class="trim-field">
           <label>Trim start (s)</label>
@@ -311,6 +314,19 @@
             <option value="line" selected>Line by line</option>
             <option value="word">Word by word</option>
           </select>
+        </div>
+        <div class="device-row">
+          <label class="device-label">Position</label>
+          <select id="captions-position" class="device-select">
+            <option value="top">Top</option>
+            <option value="middle">Middle</option>
+            <option value="bottom" selected>Bottom</option>
+          </select>
+        </div>
+        <div class="device-row">
+          <label class="device-label">Size</label>
+          <input type="range" id="captions-size" min="14" max="56" value="22" step="1" />
+          <span id="captions-size-label" class="hint-inline">22px</span>
         </div>
         <label class="mic-toggle" for="captions-replace">
           <input type="checkbox" id="captions-replace" />

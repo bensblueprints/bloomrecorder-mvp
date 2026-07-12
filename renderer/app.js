@@ -1004,6 +1004,8 @@ async function openModal(item) {
   $('#add-captions').disabled = !canTranscribe || capturingCaptions;
   $('#reels-block').classList.toggle('hidden', !canTranscribe);
   $('#make-reels').disabled = !canTranscribe || makingReels;
+  $('#captions-preview').classList.toggle('hidden', !canTranscribe);
+  if (canTranscribe) updateCaptionsPreview();
 
   // WebM from MediaRecorder often reports Infinity duration; ask ffmpeg.
   let dur = null;
@@ -1170,6 +1172,36 @@ function describeProgress(p) {
   return p.phase || '';
 }
 
+// Rough CSS approximation of the ffmpeg/libass output — not pixel-perfect,
+// but enough to see roughly where captions will land before burning them in.
+const CAPTION_PREVIEW_SAMPLE = { line: 'This is a sample caption line', word: 'WORD' };
+
+function updateCaptionsPreview() {
+  const preview = $('#captions-preview');
+  if (preview.classList.contains('hidden')) return;
+
+  const style = $('#captions-style').value;
+  const mode = $('#captions-mode').value;
+  const position = $('#captions-position').value;
+  const size = parseInt($('#captions-size').value, 10);
+  $('#captions-size-label').textContent = size + 'px';
+
+  preview.className = 'captions-preview style-' + style + ' pos-' + position;
+  const text = CAPTION_PREVIEW_SAMPLE[mode] || CAPTION_PREVIEW_SAMPLE.line;
+  preview.innerHTML = style === 'black-box' ? `<span>${text}</span>` : text;
+
+  const player = $('#player');
+  const videoH = player.videoHeight || 720;
+  const renderedH = player.clientHeight || 360;
+  const scaled = size * (renderedH / videoH);
+  preview.style.fontSize = Math.max(10, Math.round(scaled)) + 'px';
+}
+
+['captions-style', 'captions-mode', 'captions-position', 'captions-size'].forEach((id) => {
+  $('#' + id).addEventListener('input', updateCaptionsPreview);
+});
+$('#player').addEventListener('loadedmetadata', updateCaptionsPreview);
+
 $('#add-captions').addEventListener('click', async () => {
   if (!currentItem || capturingCaptions) return;
   capturingCaptions = true;
@@ -1186,7 +1218,9 @@ $('#add-captions').addEventListener('click', async () => {
       input: currentItem.path,
       replace: $('#captions-replace').checked,
       style: $('#captions-style').value,
-      mode: $('#captions-mode').value
+      mode: $('#captions-mode').value,
+      position: $('#captions-position').value,
+      fontSize: parseInt($('#captions-size').value, 10)
     });
     fill.style.width = '100%';
     label.textContent = 'Done → ' + res.output.split(/[\\/]/).pop() + ' (' + fmtSize(res.size) + ')';

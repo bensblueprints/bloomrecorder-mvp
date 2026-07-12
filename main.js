@@ -253,15 +253,36 @@ function transcriptToCues(transcript, mode) {
   return cues;
 }
 
-// Caption style templates — libass force_style strings for ffmpeg's
-// subtitles filter. Colours are &HAABBGGRR (alpha, blue, green, red).
+// Caption style templates — the "look" half of a libass force_style string
+// for ffmpeg's subtitles filter. Colours are &HAABBGGRR (alpha, blue, green,
+// red). Size and position are separate user controls, composed in at burn
+// time by buildForceStyle() rather than baked into each template.
 const CAPTION_STYLES = {
-  classic: 'FontName=Arial,FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Bold=1,Alignment=2,MarginV=60',
-  'bold-yellow': 'FontName=Arial Black,FontSize=28,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=0,Bold=1,Alignment=2,MarginV=60',
-  'black-box': 'FontName=Arial,FontSize=24,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=6,Shadow=0,Bold=1,Alignment=2,MarginV=60',
-  'yellow-outline': 'FontName=Arial Black,FontSize=28,PrimaryColour=&H00FFFFFF,OutlineColour=&H0000FFFF,BorderStyle=1,Outline=4,Shadow=0,Bold=1,Alignment=2,MarginV=60'
+  classic: 'FontName=Arial,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Bold=1',
+  'bold-yellow': 'FontName=Arial Black,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=0,Bold=1',
+  'black-box': 'FontName=Arial,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=6,Shadow=0,Bold=1',
+  'yellow-outline': 'FontName=Arial Black,PrimaryColour=&H00FFFFFF,OutlineColour=&H0000FFFF,BorderStyle=1,Outline=4,Shadow=0,Bold=1'
 };
 const DEFAULT_CAPTION_STYLE = 'classic';
+
+// ASS alignment is numpad-style: 1/2/3 = bottom L/C/R, 4/5/6 = middle, 7/8/9 = top.
+// Captions are always horizontally centered; position picks the vertical anchor.
+const CAPTION_POSITIONS = {
+  top: { alignment: 8, marginV: 40 },
+  middle: { alignment: 5, marginV: 0 },
+  bottom: { alignment: 2, marginV: 60 }
+};
+const DEFAULT_CAPTION_POSITION = 'bottom';
+const MIN_CAPTION_SIZE = 14;
+const MAX_CAPTION_SIZE = 56;
+const DEFAULT_CAPTION_SIZE = 22;
+
+function buildForceStyle(style, position, fontSize) {
+  const look = CAPTION_STYLES[style] || CAPTION_STYLES[DEFAULT_CAPTION_STYLE];
+  const pos = CAPTION_POSITIONS[position] || CAPTION_POSITIONS[DEFAULT_CAPTION_POSITION];
+  const size = Math.min(MAX_CAPTION_SIZE, Math.max(MIN_CAPTION_SIZE, Math.round(Number(fontSize)) || DEFAULT_CAPTION_SIZE));
+  return `${look},FontSize=${size},Alignment=${pos.alignment},MarginV=${pos.marginV}`;
+}
 
 function srtTimestamp(t) {
   const ms = Math.max(0, Math.round(t * 1000));
@@ -619,10 +640,10 @@ ipcMain.handle('captions:transcribe', async (e, filePath) => {
 });
 
 ipcMain.handle('captions:burn', async (e, opts) => {
-  const { input, replace, style, mode } = opts;
+  const { input, replace, style, mode, position, fontSize } = opts;
   const dir = libraryDir();
   const base = baseName(input);
-  const styleStr = CAPTION_STYLES[style] || CAPTION_STYLES[DEFAULT_CAPTION_STYLE];
+  const styleStr = buildForceStyle(style, position, fontSize);
 
   const transcript = await transcribeVideo(input, (p) => e.sender.send('captions:progress', p));
   const cues = transcriptToCues(transcript, mode);
