@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld('api', {
 
   // overlay
   overlayStop: () => ipcRenderer.send('overlay:stop-clicked'),
+  overlayPauseToggle: () => ipcRenderer.send('overlay:pause-toggle-clicked'),
+  onPauseToggleRequested: (cb) => ipcRenderer.on('recording:pause-toggle-requested', cb),
+  setOverlayPaused: (paused) => ipcRenderer.send('overlay:set-paused', paused),
+  onPausedState: (cb) => ipcRenderer.on('overlay:paused-state', (_e, paused) => cb(paused)),
+
+  openExternal: (url) => ipcRenderer.send('shell:open-external', url),
 
   listLibrary: () => ipcRenderer.invoke('library:list'),
   deleteRecording: (p) => ipcRenderer.invoke('library:delete', p),

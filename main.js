@@ -175,6 +175,12 @@ ipcMain.on('overlay:stop-clicked', () => {
     mainWindow.focus();
   }
 });
+ipcMain.on('overlay:pause-toggle-clicked', () => {
+  if (mainWindow) mainWindow.webContents.send('recording:pause-toggle-requested');
+});
+ipcMain.on('overlay:set-paused', (_e, paused) => {
+  if (overlayWindow) overlayWindow.webContents.send('overlay:paused-state', paused);
+});
 ipcMain.on('window:minimize', () => { if (mainWindow) mainWindow.minimize(); });
 
 ipcMain.on('shell:open-external', (_e, url) => {

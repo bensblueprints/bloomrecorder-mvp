@@ -16,6 +16,9 @@ let stopping = false;
 
 let timerInterval = null;
 let recordStartedAt = 0;
+let isPaused = false;
+let totalPausedMs = 0;
+let pauseStartedAt = 0;
 let currentItem = null;            // library item open in modal
 let exporting = false;
 
@@ -442,6 +445,9 @@ async function startRecording() {
     stopping = false;
     for (const r of recorders) r.recorder.start(1000);
     recordStartedAt = Date.now();
+    isPaused = false;
+    totalPausedMs = 0;
+    pauseStartedAt = 0;
 
     // UI
     const btn = $('#record-btn');
@@ -449,7 +455,8 @@ async function startRecording() {
     $('#record-btn-label').textContent = 'Stop recording';
     $('#rec-timer').classList.remove('hidden');
     timerInterval = setInterval(() => {
-      $('#rec-timer-text').textContent = fmtTime((Date.now() - recordStartedAt) / 1000);
+      const now = isPaused ? pauseStartedAt : Date.now();
+      $('#rec-timer-text').textContent = fmtTime((now - recordStartedAt - totalPausedMs) / 1000);
     }, 250);
 
     window.api.recordingStarted(); // spawns floating stop indicator
@@ -524,12 +531,29 @@ async function finalizeRecording() {
 }
 
 $('#record-btn').addEventListener('click', () => {
-  const recording = recorders.some((r) => r.recorder && r.recorder.state === 'recording');
+  const recording = recorders.some((r) => r.recorder && (r.recorder.state === 'recording' || r.recorder.state === 'paused'));
   if (recording) stopRecording();
   else startRecording();
 });
 
+function togglePauseRecording() {
+  const active = recorders.filter((r) => r.recorder.state !== 'inactive');
+  if (!active.length) return;
+  if (!isPaused) {
+    active.forEach((r) => { if (r.recorder.state === 'recording') r.recorder.pause(); });
+    isPaused = true;
+    pauseStartedAt = Date.now();
+  } else {
+    active.forEach((r) => { if (r.recorder.state === 'paused') r.recorder.resume(); });
+    totalPausedMs += Date.now() - pauseStartedAt;
+    pauseStartedAt = 0;
+    isPaused = false;
+  }
+  window.api.setOverlayPaused(isPaused);
+}
+
 window.api.onStopRequested(() => stopRecording());
+window.api.onPauseToggleRequested(() => togglePauseRecording());
 
 // ---------------------------------------------------------------------------
 // Go Live (RTMP streaming)
