@@ -372,6 +372,11 @@
         <button id="open-silence-editor" class="primary-btn alt">Remove Silences…</button>
         <div class="hint-inline">Detects quiet gaps, lets you review/trim/undo before cutting anything.</div>
       </div>
+
+      <div id="transcript-entry-block" class="short-block">
+        <button id="open-transcript-editor" class="primary-btn alt">Edit Transcript…</button>
+        <div class="hint-inline">Descript-style — delete words or pauses right from the transcript to cut the video.</div>
+      </div>
     </div>
   </div>
 
@@ -423,6 +428,42 @@
       <div id="silence-progress" class="progress hidden">
         <div class="progress-track"><div id="silence-progress-fill" class="progress-fill"></div></div>
         <div id="silence-progress-label" class="progress-label">Removing… 0%</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= TRANSCRIPT EDITOR MODAL ================= -->
+  <div id="transcript-modal" class="modal hidden">
+    <div class="modal-card transcript-card">
+      <div class="modal-head">
+        <div id="transcript-modal-title" class="modal-title">Edit Transcript</div>
+        <button id="transcript-modal-close" class="icon-btn" title="Close">✕</button>
+      </div>
+
+      <video id="transcript-player" controls></video>
+
+      <div class="device-row">
+        <button id="load-transcript" class="primary-btn alt">Transcribe &amp; Load</button>
+        <div class="hint-inline">Click a word to delete it. Shift+click to delete a whole range. Pause chips (⏸) can be deleted too.</div>
+      </div>
+
+      <div id="transcript-body" class="transcript-body">
+        <div class="empty">Click "Transcribe &amp; Load" to load this clip's transcript.</div>
+      </div>
+
+      <div class="export-row">
+        <button id="transcript-undo" class="ghost-btn" disabled>Undo</button>
+        <div class="spacer"></div>
+        <label class="mic-toggle" for="transcript-replace">
+          <input type="checkbox" id="transcript-replace" />
+          <span class="switch"></span>
+          Replace original <span class="hint-inline">off = save a new edited copy</span>
+        </label>
+        <button id="apply-transcript-edits" class="primary-btn" disabled>Apply Edits</button>
+      </div>
+      <div id="transcript-progress" class="progress hidden">
+        <div class="progress-track"><div id="transcript-progress-fill" class="progress-fill"></div></div>
+        <div id="transcript-progress-label" class="progress-label">Removing… 0%</div>
       </div>
     </div>
   </div>

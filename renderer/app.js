@@ -1006,6 +1006,8 @@ async function openModal(item) {
   $('#make-reels').disabled = !canTranscribe || makingReels;
   $('#silence-entry-block').classList.toggle('hidden', !canTranscribe);
   $('#open-silence-editor').disabled = !canTranscribe;
+  $('#transcript-entry-block').classList.toggle('hidden', !canTranscribe);
+  $('#open-transcript-editor').disabled = !canTranscribe;
   $('#captions-preview').classList.toggle('hidden', !canTranscribe);
   captionsPos = { ...CAPTION_PRESETS.bottom };
   document.querySelectorAll('.chip[data-caption-preset]').forEach((c) => c.classList.toggle('active', c.dataset.captionPreset === 'bottom'));
@@ -1559,6 +1561,191 @@ window.api.onSilenceProgress((p) => {
   if (!applyingSilenceCuts) return;
   const fill = $('#silence-progress-fill');
   const label = $('#silence-progress-label');
+  if (typeof p.percent === 'number') { fill.style.width = p.percent + '%'; label.textContent = 'Removing… ' + p.percent + '%'; }
+});
+
+// ---------------------------------------------------------------------------
+// Transcript Editor — Descript-style "delete the words, cut the video"
+// ---------------------------------------------------------------------------
+const TRANSCRIPT_GAP_THRESHOLD = 0.35; // seconds — pauses at least this long become a deletable chip
+
+let transcriptItem = null;
+let transcriptTokens = []; // [{id, kind:'word'|'gap', text, start, end}]
+let transcriptDeleted = new Set(); // token ids marked for deletion
+let transcriptUndoStack = []; // arrays of ids — each entry is one undo-able action
+let transcriptLastClickedIdx = null;
+let loadingTranscript = false;
+let applyingTranscriptEdits = false;
+
+function openTranscriptEditor(item) {
+  if (!item) return;
+  transcriptItem = item;
+  transcriptTokens = [];
+  transcriptDeleted = new Set();
+  transcriptUndoStack = [];
+  transcriptLastClickedIdx = null;
+  $('#transcript-modal-title').textContent = 'Edit Transcript — ' + item.name;
+  $('#transcript-player').src = item.url;
+  $('#transcript-replace').checked = false;
+  $('#transcript-progress').classList.add('hidden');
+  renderTranscriptBody();
+  $('#transcript-modal').classList.remove('hidden');
+}
+
+function closeTranscriptEditor() {
+  const player = $('#transcript-player');
+  player.pause();
+  player.removeAttribute('src');
+  player.load();
+  $('#transcript-modal').classList.add('hidden');
+  transcriptItem = null;
+}
+
+$('#open-transcript-editor').addEventListener('click', () => openTranscriptEditor(currentItem));
+$('#transcript-modal-close').addEventListener('click', closeTranscriptEditor);
+$('#transcript-modal').addEventListener('click', (e) => { if (e.target === $('#transcript-modal')) closeTranscriptEditor(); });
+
+function buildTranscriptTokens(words) {
+  const tokens = [];
+  let id = 0;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    tokens.push({ id: id++, kind: 'word', text: w.text, start: w.start, end: w.end });
+    if (i < words.length - 1) {
+      const gapStart = w.end;
+      const gapEnd = words[i + 1].start;
+      if (gapEnd - gapStart >= TRANSCRIPT_GAP_THRESHOLD) {
+        tokens.push({ id: id++, kind: 'gap', text: '⏸ ' + (gapEnd - gapStart).toFixed(1) + 's', start: gapStart, end: gapEnd });
+      }
+    }
+  }
+  return tokens;
+}
+
+function renderTranscriptBody() {
+  const body = $('#transcript-body');
+  const deletedCount = transcriptTokens.filter((t) => transcriptDeleted.has(t.id)).length;
+  $('#transcript-undo').disabled = transcriptUndoStack.length === 0;
+  $('#apply-transcript-edits').disabled = deletedCount === 0 || applyingTranscriptEdits;
+
+  if (!transcriptTokens.length) {
+    body.innerHTML = loadingTranscript
+      ? '<div class="empty">Transcribing…</div>'
+      : '<div class="empty">Click "Transcribe &amp; Load" to load this clip\'s transcript.</div>';
+    return;
+  }
+
+  body.innerHTML = '';
+  transcriptTokens.forEach((tok, idx) => {
+    const span = document.createElement('span');
+    span.className = 'transcript-token ' + (tok.kind === 'gap' ? 'gap-token' : 'word-token') + (transcriptDeleted.has(tok.id) ? ' deleted' : '');
+    span.textContent = tok.kind === 'gap' ? tok.text : tok.text + ' ';
+    span.addEventListener('click', (e) => onTranscriptTokenClick(idx, e.shiftKey));
+    body.appendChild(span);
+  });
+}
+
+function onTranscriptTokenClick(idx, shiftKey) {
+  if (shiftKey && transcriptLastClickedIdx != null) {
+    const [from, to] = [transcriptLastClickedIdx, idx].sort((a, b) => a - b);
+    const batch = [];
+    for (let i = from; i <= to; i++) {
+      const id = transcriptTokens[i].id;
+      if (!transcriptDeleted.has(id)) { transcriptDeleted.add(id); batch.push(id); }
+    }
+    if (batch.length) transcriptUndoStack.push(batch);
+  } else {
+    const id = transcriptTokens[idx].id;
+    if (transcriptDeleted.has(id)) {
+      transcriptDeleted.delete(id);
+      transcriptUndoStack = transcriptUndoStack.map((b) => b.filter((x) => x !== id)).filter((b) => b.length);
+    } else {
+      transcriptDeleted.add(id);
+      transcriptUndoStack.push([id]);
+    }
+  }
+  transcriptLastClickedIdx = idx;
+  renderTranscriptBody();
+}
+
+$('#load-transcript').addEventListener('click', async () => {
+  if (!transcriptItem || loadingTranscript) return;
+  loadingTranscript = true;
+  $('#load-transcript').disabled = true;
+  renderTranscriptBody();
+  try {
+    const transcript = await window.api.transcribe(transcriptItem.path);
+    transcriptTokens = buildTranscriptTokens(transcript.words || []);
+    transcriptDeleted = new Set();
+    transcriptUndoStack = [];
+    if (!transcriptTokens.length) toast('No speech detected in this clip', true);
+  } catch (err) {
+    toast('Transcribe failed: ' + err.message, true, 6000);
+  } finally {
+    loadingTranscript = false;
+    $('#load-transcript').disabled = false;
+    renderTranscriptBody();
+  }
+});
+
+$('#transcript-undo').addEventListener('click', () => {
+  const batch = transcriptUndoStack.pop();
+  if (!batch) return;
+  batch.forEach((id) => transcriptDeleted.delete(id));
+  renderTranscriptBody();
+});
+
+function mergedTranscriptCuts() {
+  const ranges = transcriptTokens
+    .filter((t) => transcriptDeleted.has(t.id))
+    .map((t) => ({ start: t.start, end: t.end }))
+    .sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end + 0.05) last.end = Math.max(last.end, r.end);
+    else merged.push({ ...r });
+  }
+  return merged;
+}
+
+$('#apply-transcript-edits').addEventListener('click', async () => {
+  if (!transcriptItem || applyingTranscriptEdits) return;
+  const cuts = mergedTranscriptCuts();
+  if (!cuts.length) return;
+  applyingTranscriptEdits = true;
+  const progWrap = $('#transcript-progress');
+  const fill = $('#transcript-progress-fill');
+  const label = $('#transcript-progress-label');
+  progWrap.classList.remove('hidden');
+  fill.style.width = '2%';
+  label.textContent = 'Removing… 0%';
+  $('#apply-transcript-edits').disabled = true;
+
+  try {
+    const res = await window.api.applySilenceCuts({
+      input: transcriptItem.path,
+      cuts,
+      replace: $('#transcript-replace').checked
+    });
+    fill.style.width = '100%';
+    label.textContent = 'Done → ' + res.output.split(/[\\/]/).pop() + ' (' + fmtSize(res.size) + ')';
+    toast(`Applied ${cuts.length} edit${cuts.length === 1 ? '' : 's'}`);
+    renderLibrary();
+    closeTranscriptEditor();
+  } catch (err) {
+    label.textContent = 'Apply failed';
+    toast('Apply Edits failed: ' + err.message, true, 6000);
+  } finally {
+    applyingTranscriptEdits = false;
+    $('#apply-transcript-edits').disabled = transcriptDeleted.size === 0;
+  }
+});
+
+window.api.onSilenceProgress((p) => {
+  if (!applyingTranscriptEdits) return;
+  const fill = $('#transcript-progress-fill');
+  const label = $('#transcript-progress-label');
   if (typeof p.percent === 'number') { fill.style.width = p.percent + '%'; label.textContent = 'Removing… ' + p.percent + '%'; }
 });
 
