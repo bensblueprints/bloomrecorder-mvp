@@ -4,9 +4,10 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)]()
 [![Local First](https://img.shields.io/badge/100%25-local-red.svg)]()
 
-**The Loom replacement you buy once.** Record your screen, your camera, or both — save everything locally, export MP4 or GIF — no cloud, no monthly bill, no watermark, no upload limits. Your recordings live on *your* disk, not on someone else's server.
+**The complete Loom killer.** BloomRecorder doesn't just record your screen and camera as two clean files — it builds your reels *for you*, in the viral vertical format, screen on top and camera on the bottom (or flip it). Then it goes further than anything else in this space: **remove silences**, **add captions**, **turn long-form recordings into shorts**, and **edit out words or entire lines you didn't mean to say — word by word, in a click-to-delete text editor** — all running locally on your machine. No cloud AI, no subscription to a captioning add-on, no per-minute transcription bill.
 
 > **Pay once. Own it forever. No subscription.**
+> Try it — if it's not for you, email us within 30 days for a full refund.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -66,6 +67,8 @@ Don't want to touch a terminal? Grab the packaged installer (one-time purchase, 
 
 **→ [https://whop.com/checkout/plan_Ma48eglvyofUF](https://whop.com/checkout/plan_Ma48eglvyofUF)**
 
+**30-day money-back guarantee.** Try BloomRecorder for real. If it's not for you, email **support@bloomrecorder.com** within 30 days of purchase and we'll refund you — no questions asked.
+
 ## 🥊 vs. Loom
 
 | | **BloomRecorder** | Loom Business |
@@ -77,6 +80,9 @@ Don't want to touch a terminal? Grab the packaged installer (one-time purchase, 
 | Works offline | **Yes** | No |
 | Account required | **No** | Yes |
 | MP4 + GIF export | **Built in** | GIF gated by plan |
+| Auto-reels (screen + camera, viral vertical format) | **Built in** | Not available |
+| Captions, silence removal, word-by-word text editing | **Built in, fully local** | Paid AI add-on, cloud-based |
+| Live streaming (Twitch/RTMP) | **Built in** | Not supported |
 | Your data mined for AI | **Impossible — it never leaves** | Read the ToS |
 
 Loom is great for team clouds. If you just want to *record your screen and own the file* — that shouldn't cost $180 a year.
