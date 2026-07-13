@@ -67,7 +67,7 @@ Don't want to touch a terminal? Grab the packaged installer (one-time purchase, 
 
 **→ [https://whop.com/checkout/plan_Ma48eglvyofUF](https://whop.com/checkout/plan_Ma48eglvyofUF)**
 
-**30-day money-back guarantee.** Try BloomRecorder for real. If it's not for you, email **support@bloomrecorder.com** within 30 days of purchase and we'll refund you — no questions asked.
+**30-day money-back guarantee.** Try BloomRecorder for real. If it's not for you, email **support@onetimesuite.com** within 30 days of purchase and we'll refund you — no questions asked.
 
 ## 🥊 vs. Loom
 
